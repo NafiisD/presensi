@@ -1,72 +1,33 @@
-import {
-  Injectable,
-  UnauthorizedException,
-  ConflictException,
-} from '@nestjs/common';
-import { JwtService } from '@nestjs/jwt';
-import { PrismaService } from '../../prisma/prisma.service';
+import { Injectable, UnauthorizedException } from '@nestjs/common';
+import * as jwt from 'jsonwebtoken';
 import * as bcrypt from 'bcrypt';
+import { UserService } from '../user/user.service';
 
 @Injectable()
 export class AuthService {
-  constructor(
-    private prisma: PrismaService,
-    private jwtService: JwtService,
-  ) {}
-
-  
+  constructor(private readonly userService: UserService) { }
 
   async login(username: string, password: string) {
-    const user = await this.prisma.user.findFirst({
-      where: { username },
-    });
-
+    const user = this.userService.findByUsername(username);
     if (!user) {
-      throw new UnauthorizedException('Username atau password salah');
+      throw new UnauthorizedException('Username tidak ditemukan');
     }
 
-    const isPasswordValid = await bcrypt.compare(password, user.password);
-
+    const isPasswordValid = bcrypt.compareSync(password, user.password);
     if (!isPasswordValid) {
-      throw new UnauthorizedException('Username atau password salah');
+      throw new UnauthorizedException('Password salah');
     }
 
-    const payload = { sub: user.id, username: user.username, role: user.role };
-    const token = await this.jwtService.signAsync(payload);
+    const token = jwt.sign(
+      { id: user.id, username: user.username, role: user.role },
+      'SECRET_KEY',
+      { expiresIn: '1h' },
+    );
 
     return {
-      statusCode: 200,
-      message: 'Login successful',
-      success: true,
-      data: {
-        access_token: token,
-        user: {
-          id: user.id,
-          username: user.username,
-          name: user.name,
-          role: user.role,
-        },
-      },
+      status: 'success',
+      message: 'login berhasil',
+      token,
     };
   }
-
-  async validateToken(token: string) {
-    try {
-      const payload = await this.jwtService.verifyAsync(token, {
-        secret: process.env.JWT_SECRET || 'your-secret-key',
-      });
-
-      return {
-        statusCode: 200,
-        message: 'Token is valid',
-        success: true,
-        data: payload,
-      };
-    } catch (error) {
-      throw new UnauthorizedException('Token tidak valid');
-    }
-  }
-
-
- 
 }

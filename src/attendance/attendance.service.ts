@@ -1,158 +1,72 @@
 import { Injectable } from '@nestjs/common';
-import { CreateAttendanceDto } from './dto/create-attendance.dto';
-import { UpdateAttendanceDto } from './dto/update-attendance.dto';
-import { PrismaService } from '../../prisma/prisma.service';
+import dayjs from 'dayjs';
+
+export interface Attendance {
+  attendance_id: number;
+  user_id: number;
+  date: string;
+  time: string;
+  status: string; // "hadir" | "izin" | "sakit" | "alpa"
+  group?: string; // kelas / jabatan (opsional)
+}
 
 @Injectable()
 export class AttendanceService {
-  constructor(private prisma: PrismaService) { }
-  async create(createAttendanceDto: CreateAttendanceDto, userId: number) {
-    const attendance = await this.prisma.attendance.create({
-      data: {
-        userId: userId,
-        status: createAttendanceDto.status,
-        date: new Date(),
-      },
-    });
+  private attendanceList: Attendance[] = [];
+
+  create(data: any) {
+    const { user_id, date, time, status, group } = data;
+
+    if (!user_id || !date || !time) {
+      return { message: 'Data presensi tidak lengkap' };
+    }
+
+    const attendanceStatus = status || this.getStatus(time);
+
+    const newAttendance: Attendance = {
+      attendance_id: this.attendanceList.length + 1,
+      user_id: Number(user_id),
+      date,
+      time,
+      status: attendanceStatus.toLowerCase(),
+      group: group || 'Umum',
+    };
+
+    this.attendanceList.push(newAttendance);
 
     return {
-      statusCode: 201,
-      message: 'Attendance created successfully',
-      success: true,
-      data: attendance,
+      status: 'success',
+      message: 'Presensi berhasil dicatat',
+      data: newAttendance,
     };
   }
 
-  async findAll() {
-    const attendances = await this.prisma.attendance.findMany({
-      include: {
-        user: {
-          select: {
-            id: true,
-            name: true,
-            username: true,
-            role: true,
-          },
-        },
-      },
-      orderBy: {
-        date: 'desc',
-      },
-    });
+  getHistory(user_id: number) {
+    const userAttendance = this.attendanceList.filter(
+      (a) => a.user_id === user_id,
+    );
 
-    return {
-      statusCode: 200,
-      message: 'Attendances retrieved successfully',
-      success: true,
-      data: attendances,
-    };
-  }
-
-  async findOne(id: number) {
-    const attendance = await this.prisma.attendance.findUnique({
-      where: { id },
-      include: {
-        user: {
-          select: {
-            id: true,
-            name: true,
-            username: true,
-            role: true,
-          },
-        },
-      },
-    });
-
-    if (!attendance) {
-      return {
-        statusCode: 404,
-        message: 'Attendance not found',
-        success: false,
-        data: null,
-      };
+    if (userAttendance.length === 0) {
+      return { message: 'Riwayat presensi tidak ditemukan' };
     }
 
     return {
-      statusCode: 200,
-      message: 'Attendance retrieved successfully',
-      success: true,
-      data: attendance,
+      status: 'success',
+      data: userAttendance,
     };
   }
 
-  async update(id: number, updateAttendanceDto: UpdateAttendanceDto) {
-    const attendance = await this.prisma.attendance.update({
-      where: { id },
-      data: {
-        status: updateAttendanceDto.status,
-        date: new Date(),
-      },
-    });
+  // 🔹 Rekap bulanan
+  getMonthlySummary(user_id: number) {
+    const now = dayjs();
+    const month = now.format('MM-YYYY');
 
-    return {
-      statusCode: 200,
-      message: 'Attendance updated successfully',
-      success: true,
-      data: attendance,
-    };
-  }
-
-  async remove(id: number) {
-    const attendance = await this.prisma.attendance.delete({
-      where: { id },
-    });
-
-    return {
-      statusCode: 200,
-      message: 'Attendance deleted successfully',
-      success: true,
-      data: attendance,
-    };
-  }
-
-  async findByUserId(userId: number) {
-    const attendances = await this.prisma.attendance.findMany({
-      where: { userId },
-      include: {
-        user: {
-          select: {
-            id: true,
-            name: true,
-            username: true,
-            role: true,
-          },
-        },
-      },
-      orderBy: {
-        date: 'desc',
-      },
-    });
-
-    return {
-      statusCode: 200,
-      message: 'User attendance history retrieved successfully',
-      success: true,
-      data: attendances,
-    };
-  }
-
-  async summarizeAttendance(userId: number) {
-    const now = new Date();
-    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
-    const endOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0);
-
-    const records = await this.prisma.attendance.findMany({
-      where: {
-        userId,
-        date: {
-          gte: startOfMonth,
-          lte: endOfMonth,
-        },
-      },
-      select: {
-        status: true,
-      },
-    });
+    const userData = this.attendanceList.filter(
+      (a) =>
+        a.user_id === user_id &&
+        dayjs(a.date).month() === now.month() &&
+        dayjs(a.date).year() === now.year(),
+    );
 
     const summary = {
       hadir: 0,
@@ -161,114 +75,90 @@ export class AttendanceService {
       alpa: 0,
     };
 
-    records.forEach((record) => {
-      if (record.status !== undefined) {
-        summary[record.status] += 1;
+    userData.forEach((a) => {
+      if (summary[a.status as keyof typeof summary] !== undefined) {
+        summary[a.status as keyof typeof summary]++;
       }
     });
 
     return {
-      statusCode: 200,
-      message: 'Attendance summary retrieved successfully',
-      success: true,
+      status: 'success',
       data: {
-        user_id: userId,
-        month: `${now.getMonth() + 1}-${now.getFullYear()}`,
+        user_id,
+        month,
         attendance_summary: summary,
       },
     };
   }
 
-  async analyzeAttendance(startDate: string, endDate: string, groupByJabatan?: string) {
-    // Build where clause
-    const whereClause: any = {
-      date: {
-        gte: new Date(startDate),
-        lte: new Date(endDate),
-      },
-    };
+  // 🔹 Analisis kehadiran berdasarkan periode dan kategori
+  getAttendanceAnalysis(body: any) {
+    const { start_date, end_date, group_by } = body;
+    const start = dayjs(start_date);
+    const end = dayjs(end_date);
 
-
-    if (groupByJabatan) {
-      whereClause.user = {
-        jabatan: groupByJabatan,
-      };
-    }
-
-
-    const attendances = await this.prisma.attendance.findMany({
-      where: whereClause,
-      include: {
-        user: {
-          select: {
-            id: true,
-            name: true,
-            username: true,
-            role: true,
-            jabatan: true,
-          },
-        },
-      },
+    const filteredData = this.attendanceList.filter((a) => {
+      const d = dayjs(a.date);
+      return d.isAfter(start.subtract(1, 'day')) && d.isBefore(end.add(1, 'day'));
     });
 
- 
-    const grouped = attendances.reduce((acc, record) => {
-      const jabatan = record.user.jabatan || 'Unknown';
-      
-      if (!acc[jabatan]) {
-        acc[jabatan] = {
-          totalUsers: new Set(),
-          counts: { hadir: 0, izin: 0, sakit: 0, alpha: 0 },
-        };
-      }
+    // Kelompokkan berdasarkan "group" (misal kelas / jabatan)
+    const grouped: Record<string, Attendance[]> = {};
 
+    filteredData.forEach((a) => {
+      const group = a.group || 'Umum';
+      if (!grouped[group]) grouped[group] = [];
+      grouped[group].push(a);
+    });
 
-      acc[jabatan].totalUsers.add(record.userId);
+    const groupedAnalysis = Object.entries(grouped).map(([group, records]) => {
+      const totalUsers = new Set(records.map((r) => r.user_id)).size;
 
-      const status = record.status.toLowerCase();
-      if (status === 'hadir') acc[jabatan].counts.hadir++;
-      else if (status === 'izin') acc[jabatan].counts.izin++;
-      else if (status === 'sakit') acc[jabatan].counts.sakit++;
-      else if (status === 'alpha' || status === 'alpa') acc[jabatan].counts.alpha++;
+      const totals = {
+        hadir: 0,
+        izin: 0,
+        sakit: 0,
+        alpa: 0,
+      };
 
-      return acc;
-    }, {} as Record<string, { totalUsers: Set<number>; counts: { hadir: number; izin: number; sakit: number; alpha: number } }>);
+      records.forEach((r) => {
+        if (totals[r.status as keyof typeof totals] !== undefined) {
+          totals[r.status as keyof typeof totals]++;
+        }
+      });
 
+      const totalAttendance = Object.values(totals).reduce((a, b) => a + b, 0);
 
-    const result = Object.entries(grouped).map(([group, data]) => {
-      const total = Object.values(data.counts).reduce((a, b) => a + b, 0);
-      
+      const percentages = {
+        hadir_percentage: totalAttendance ? (totals.hadir / totalAttendance) * 100 : 0,
+        izin_percentage: totalAttendance ? (totals.izin / totalAttendance) * 100 : 0,
+        sakit_percentage: totalAttendance ? (totals.sakit / totalAttendance) * 100 : 0,
+        alpa_percentage: totalAttendance ? (totals.alpa / totalAttendance) * 100 : 0,
+      };
+
       return {
         group,
-        total_users: data.totalUsers.size,
-        attendance_rate: {
-          hadir_percentage: total > 0 ? ((data.counts.hadir / total) * 100).toFixed(2) + '%' : '0%',
-          izin_percentage: total > 0 ? ((data.counts.izin / total) * 100).toFixed(2) + '%' : '0%',
-          sakit_percentage: total > 0 ? ((data.counts.sakit / total) * 100).toFixed(2) + '%' : '0%',
-          alpha_percentage: total > 0 ? ((data.counts.alpha / total) * 100).toFixed(2) + '%' : '0%',
-        },
-        total_attendance: {
-          hadir: data.counts.hadir,
-          izin: data.counts.izin,
-          sakit: data.counts.sakit,
-          alpha: data.counts.alpha,
-          total: total,
-        },
+        total_users: totalUsers,
+        attendance_rate: percentages,
+        total_attendance: totals,
       };
     });
 
     return {
-      statusCode: 200,
-      message: 'Attendance analysis completed successfully',
-      success: true,
+      status: 'success',
       data: {
-        analysis_period: {
-          start_date: startDate,
-          end_date: endDate,
-          filtered_by_jabatan: groupByJabatan || 'All',
-        },
-        grouped_analysis: result,
+        analysis_period: { start_date, end_date },
+        grouped_analysis: groupedAnalysis,
       },
     };
+  }
+
+  // 🔸 Helper status otomatis
+  private getStatus(time: string): string {
+    const [hour] = time.split(':').map(Number);
+    if (hour < 8) return 'hadir';
+    else if (hour >= 8 && hour < 9) return 'izin';
+    else if (hour >= 9 && hour < 12) return 'sakit';
+    else return 'alpa';
   }
 }
